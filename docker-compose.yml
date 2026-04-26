@@ -1,0 +1,26 @@
+# Local production-like stack: copy backend/.env.example → backend/.env first.
+# API: http://127.0.0.1:8000  ·  UI: http://127.0.0.1:3000
+
+services:
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./backend/.env
+    environment:
+      APP_ENV: production
+      CORS_ORIGINS: http://localhost:3000,http://127.0.0.1:3000
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: http://127.0.0.1:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api

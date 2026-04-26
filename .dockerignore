@@ -1,0 +1,10 @@
+backend/.venv
+**/__pycache__
+**/node_modules
+.next
+.git
+*.md
+.env
+.env.*
+!.env.local.example
+backend/.env
