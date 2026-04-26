@@ -7,6 +7,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from starlette.requests import Request
+from starlette.responses import Response
 
 from app.agent.graph import run_pipeline
 from app.config import get_settings
@@ -77,9 +78,20 @@ def root() -> dict[str, str]:
     return {"service": "AutoHackFix API", "health": "/health"}
 
 
+@app.head("/", include_in_schema=False)
+def root_head() -> Response:
+    """Uptime monitors often use HEAD; FastAPI does not add it automatically for every GET."""
+    return Response(status_code=200)
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.head("/health", include_in_schema=False)
+def health_head() -> Response:
+    return Response(status_code=200)
 
 
 @app.post("/api/analyze", response_model=AnalyzeResponse)
