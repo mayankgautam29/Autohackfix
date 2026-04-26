@@ -1,5 +1,5 @@
-# Render Blueprint — create two Web Services from this repo, or adjust names/URLs.
-# Set secrets in the dashboard: OPENAI_API_KEY, CORS_ORIGINS (your frontend origin).
+# Render Blueprint — OPENAI_API_KEY must still be set as a secret in the dashboard.
+# CORS includes the live Vercel app + local dev.
 
 services:
   - type: web
@@ -15,10 +15,8 @@ services:
       - key: OPENAI_MODEL
         value: gpt-4o-mini
       - key: CORS_ORIGINS
-        sync: false
+        value: https://autohackfix.vercel.app,http://localhost:3000,http://127.0.0.1:3000
 
-  # Frontend: set NEXT_PUBLIC_API_URL to your *public* API URL. On Render, mark it
-  # available at build time so Next.js can inline it (Dashboard → Env → “build time”).
   - type: web
     name: autohackfix-web
     runtime: docker
@@ -26,4 +24,4 @@ services:
     dockerfilePath: ./Dockerfile
     envVars:
       - key: NEXT_PUBLIC_API_URL
-        sync: false
+        value: https://autohackfix.onrender.com

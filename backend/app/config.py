@@ -6,7 +6,11 @@ class Settings(BaseSettings):
 
     openai_api_key: str = ""
     openai_model: str = "gpt-4o-mini"
-    cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
+    # Production UI (Vercel) + local dev. Override with CORS_ORIGINS on the host if needed.
+    cors_origins: str = (
+        "https://autohackfix.vercel.app,"
+        "http://localhost:3000,http://127.0.0.1:3000"
+    )
     # development | production — used for middleware / headers
     app_env: str = "development"
     # When behind a reverse proxy with a path prefix, set e.g. /api (no trailing slash)

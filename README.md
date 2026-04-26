@@ -29,6 +29,15 @@ The UI sends your **GitHub token** to **your** API only; the **OpenAI** key stay
 | HTTP client | [httpx](https://www.python-httpx.org/) → GitHub REST |
 | UI | [Next.js](https://nextjs.org/) 16, React 19, [Tailwind CSS](https://tailwindcss.com/) 4, [Lucide](https://lucide.dev/) |
 
+### Live deployment
+
+| | URL |
+|--|-----|
+| UI (Vercel) | [https://autohackfix.vercel.app](https://autohackfix.vercel.app/) |
+| API (Render) | [https://autohackfix.onrender.com](https://autohackfix.onrender.com) |
+
+Production builds read **`NEXT_PUBLIC_API_URL`** from [`.env.production`](.env.production) so the browser calls the Render API. After changing URLs, redeploy both services. On Render, set **`CORS_ORIGINS`** if it is overridden in the dashboard (must include `https://autohackfix.vercel.app`).
+
 ---
 
 ## Prerequisites
@@ -220,6 +229,7 @@ autohackfix/
 ├── docker-compose.yml
 ├── render.yaml               # Optional Render blueprint
 ├── .env.local.example
+├── .env.production            # NEXT_PUBLIC_API_URL for Vercel builds
 ├── package.json
 └── README.md
 ```

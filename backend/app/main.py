@@ -71,6 +71,12 @@ class AnalyzeResponse(BaseModel):
     error: str | None = None
 
 
+@app.get("/", include_in_schema=False)
+def root() -> dict[str, str]:
+    """Render and uptime checks often hit `/` or `HEAD /`."""
+    return {"service": "AutoHackFix API", "health": "/health"}
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
