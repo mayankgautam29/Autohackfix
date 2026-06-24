@@ -41,6 +41,8 @@ type AnalyzeResult = {
   validation_notes: string;
   pr_url: string | null;
   branch_name: string | null;
+  run_id: string | null;
+  can_create_pr: boolean;
   ingest_from_cache: boolean;
   pr_blocked_reason: string | null;
   stage_log: string[];
@@ -88,8 +90,10 @@ export default function Home() {
   const [useCache, setUseCache] = useState(true);
   const [refreshCache, setRefreshCache] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [prLoading, setPrLoading] = useState(false);
   const [result, setResult] = useState<AnalyzeResult | null>(null);
   const [clientError, setClientError] = useState<string | null>(null);
+  const [prError, setPrError] = useState<string | null>(null);
 
   const hasToken = token.trim().length > 0;
 
@@ -101,6 +105,7 @@ export default function Home() {
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setClientError(null);
+    setPrError(null);
     setResult(null);
     setLoading(true);
     try {
@@ -133,6 +138,57 @@ export default function Home() {
       );
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function onCreatePr() {
+    if (!result?.run_id) return;
+    setPrError(null);
+    const pat = token.trim();
+    if (!pat) {
+      setPrError("Add a GitHub token above, then create the PR — no re-scan or AI cost.");
+      return;
+    }
+    setPrLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/create-pr`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ run_id: result.run_id, github_token: pat }),
+      });
+      const data = (await res.json()) as {
+        ok: boolean;
+        pr_url?: string | null;
+        branch_name?: string | null;
+        error?: string | null;
+        detail?: unknown;
+      };
+      if (!res.ok) {
+        const detail =
+          typeof data.detail === "string"
+            ? data.detail
+            : JSON.stringify(data.detail ?? res.statusText);
+        setPrError(detail);
+        return;
+      }
+      if (!data.ok || !data.pr_url) {
+        setPrError(data.error ?? "Could not open pull request.");
+        return;
+      }
+      setResult((prev) =>
+        prev
+          ? {
+              ...prev,
+              pr_url: data.pr_url ?? null,
+              branch_name: data.branch_name ?? null,
+              can_create_pr: false,
+            }
+          : prev,
+      );
+    } catch (err) {
+      setPrError(err instanceof Error ? err.message : "Request failed.");
+    } finally {
+      setPrLoading(false);
     }
   }
 
@@ -277,7 +333,7 @@ export default function Home() {
                 </span>
                 <span className="mt-1 block text-[var(--faint)]">
                   {hasToken
-                    ? "New branch, commit, and PR against the default branch."
+                    ? "Open immediately after scan, or review first and use “Create PR from this scan” below."
                     : "Requires a GitHub token — scan and fix still work without one."}
                 </span>
               </span>
@@ -439,6 +495,39 @@ export default function Home() {
                     {result.new_content}
                   </pre>
                 </details>
+              )}
+
+              {result.can_create_pr && !result.pr_url && (
+                <section className="rounded-2xl border border-emerald-500/30 bg-[var(--accent-dim)]/40 p-5">
+                  <h2 className="flex items-center gap-2 font-semibold text-emerald-100">
+                    <GitPullRequest className="size-5 text-emerald-400" strokeWidth={2} />
+                    Create PR from this scan
+                  </h2>
+                  <p className="mt-2 text-sm leading-relaxed text-emerald-100/75">
+                    Opens a pull request using the fix above — no re-scan and no extra AI tokens.
+                  </p>
+                  {prError && (
+                    <p className="mt-3 text-sm text-rose-300">{prError}</p>
+                  )}
+                  <button
+                    type="button"
+                    disabled={prLoading}
+                    onClick={onCreatePr}
+                    className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl border border-emerald-500/40 bg-emerald-500/15 px-4 py-3 text-sm font-semibold text-emerald-100 transition hover:bg-emerald-500/25 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {prLoading ? (
+                      <>
+                        <Loader2 className="size-4 animate-spin" strokeWidth={2} />
+                        Opening pull request…
+                      </>
+                    ) : (
+                      <>
+                        Create pull request
+                        <ChevronRight className="size-4 opacity-80" strokeWidth={2} />
+                      </>
+                    )}
+                  </button>
+                </section>
               )}
 
               {result.pr_url && (

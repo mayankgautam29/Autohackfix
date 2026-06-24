@@ -11,7 +11,9 @@ from starlette.responses import Response
 from app.agent.graph import run_pipeline
 from app.config import get_settings
 from app.diff_util import diff_line_stats, unified_diff_text
+from app.pr_service import create_pull_request_for_fix
 from app.rate_limit import RateLimiter, client_ip
+from app.run_store import get_pr_ready_run, mark_run_pr_created, save_pr_ready_run
 
 load_dotenv()
 _settings = get_settings()
@@ -99,10 +101,51 @@ class AnalyzeResponse(BaseModel):
     validation_notes: str = ""
     pr_url: str | None = None
     branch_name: str | None = None
+    run_id: str | None = None
+    can_create_pr: bool = False
     ingest_from_cache: bool = False
     pr_blocked_reason: str | None = None
     stage_log: list[str] = []
     error: str | None = None
+
+
+class CreatePrRequest(BaseModel):
+    run_id: str = Field(..., min_length=8, description="ID from a completed scan with a validated fix")
+    github_token: str = Field(..., min_length=8, description="GitHub PAT with repo write + PR scope")
+
+
+class CreatePrResponse(BaseModel):
+    ok: bool
+    pr_url: str | None = None
+    branch_name: str | None = None
+    error: str | None = None
+
+
+def _save_pr_ready_run_from_state(state: dict[str, Any], *, ttl_seconds: int) -> str | None:
+    """Persist validated fix for later PR — no OpenAI re-run needed."""
+    if not state.get("validation_passed"):
+        return None
+    target = state.get("target_path") or ""
+    new_content = state.get("new_content") or ""
+    if not target or not new_content:
+        return None
+    if state.get("pr_url"):
+        return None
+    return save_pr_ready_run(
+        {
+            "owner": state.get("owner") or "",
+            "repo": state.get("repo") or "",
+            "default_branch": state.get("default_branch") or "main",
+            "target_path": target,
+            "fix_title": state.get("fix_title") or "AutoHackFix: automated fix",
+            "fix_explanation": state.get("fix_explanation") or "",
+            "new_content": new_content,
+            "confidence": float(state.get("confidence") or 0.0),
+            "validation_notes": state.get("validation_notes") or "",
+            "file_shas": state.get("file_shas") or {},
+        },
+        ttl_seconds=ttl_seconds,
+    )
 
 
 def _enforce_rate_limit(request: Request) -> None:
@@ -176,6 +219,10 @@ def analyze(body: AnalyzeRequest, request: Request) -> AnalyzeResponse:
         diff_text = unified_diff_text(old_content, new_content, target_path)
         diff_additions, diff_deletions = diff_line_stats(diff_text)
 
+    run_id = _save_pr_ready_run_from_state(state, ttl_seconds=_settings.cache_ttl_seconds)
+    pr_url = state.get("pr_url")
+    can_create_pr = bool(run_id and not pr_url)
+
     return AnalyzeResponse(
         ok=ok,
         owner=state.get("owner") or "",
@@ -192,10 +239,53 @@ def analyze(body: AnalyzeRequest, request: Request) -> AnalyzeResponse:
         confidence=float(state.get("confidence") or 0.0),
         validation_passed=bool(state.get("validation_passed")),
         validation_notes=state.get("validation_notes") or "",
-        pr_url=state.get("pr_url"),
+        pr_url=pr_url,
         branch_name=state.get("branch_name"),
+        run_id=run_id,
+        can_create_pr=can_create_pr,
         ingest_from_cache=bool(state.get("ingest_from_cache")),
         pr_blocked_reason=state.get("pr_blocked_reason"),
         stage_log=list(state.get("stage_log") or []),
         error=err,
     )
+
+
+@app.post("/api/create-pr", response_model=CreatePrResponse)
+def create_pr(body: CreatePrRequest, request: Request) -> CreatePrResponse:
+    """Open a PR from a saved scan — GitHub only, no AI re-run."""
+    _enforce_rate_limit(request)
+
+    token = body.github_token.strip()
+    record = get_pr_ready_run(body.run_id.strip())
+    if not record:
+        raise HTTPException(
+            status_code=404,
+            detail="Scan not found or expired. Run analysis again (cached ingest avoids re-scanning).",
+        )
+    if record.get("pr_url"):
+        return CreatePrResponse(
+            ok=True,
+            pr_url=str(record["pr_url"]),
+            branch_name=record.get("branch_name"),
+        )
+
+    outcome = create_pull_request_for_fix(
+        token,
+        owner=str(record.get("owner") or ""),
+        repo=str(record.get("repo") or ""),
+        default_branch=str(record.get("default_branch") or "main"),
+        target_path=str(record.get("target_path") or ""),
+        fix_title=str(record.get("fix_title") or "AutoHackFix: automated fix"),
+        fix_explanation=str(record.get("fix_explanation") or ""),
+        new_content=str(record.get("new_content") or ""),
+        confidence=float(record.get("confidence") or 0.0),
+        validation_notes=str(record.get("validation_notes") or ""),
+        file_shas=dict(record.get("file_shas") or {}),
+    )
+    if outcome.get("error"):
+        return CreatePrResponse(ok=False, error=str(outcome["error"]))
+
+    pr_url = str(outcome["pr_url"])
+    branch_name = str(outcome.get("branch_name") or "")
+    mark_run_pr_created(body.run_id.strip(), pr_url=pr_url, branch_name=branch_name)
+    return CreatePrResponse(ok=True, pr_url=pr_url, branch_name=branch_name)

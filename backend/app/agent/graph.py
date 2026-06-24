@@ -13,17 +13,13 @@ from langchain_openai import ChatOpenAI
 from langgraph.graph import END, StateGraph
 
 from app.github_client import (
-    commit_file_update,
-    create_branch,
     fetch_file_text,
-    get_default_branch_sha,
     get_repo_meta,
     list_root_paths,
-    open_pull_request,
     parse_repo_input,
     select_text_files,
-    unique_branch_name,
 )
+from app.pr_service import create_pull_request_for_fix
 from app.repo_cache import get_cached_ingest, set_cached_ingest
 
 
@@ -397,7 +393,7 @@ def node_pr(state: AgentState, *, model: str, openai_key: str) -> dict[str, Any]
     if state.get("error") or not state.get("validation_passed"):
         return {}
     if not state.get("create_pr"):
-        return {"stage_log": ["PR: skipped (dry run / user disabled PR creation)."], "pr_url": None}
+        return {"stage_log": ["PR: skipped — review results and use “Create PR” when ready."], "pr_url": None}
 
     token = (state.get("github_token") or "").strip()
     if not token:
@@ -408,50 +404,30 @@ def node_pr(state: AgentState, *, model: str, openai_key: str) -> dict[str, Any]
             "pr_blocked_reason": reason,
         }
 
-    owner, repo = state["owner"], state["repo"]
-    path = state["target_path"]
-    branch = unique_branch_name()
-    base = state["default_branch"]
-    try:
-        with httpx.Client() as client:
-            tip_sha = get_default_branch_sha(client, token, owner, repo, base)
-            create_branch(client, token, owner, repo, branch, tip_sha)
-            blob_sha = state["file_shas"].get(path)
-            commit_file_update(
-                client,
-                token,
-                owner,
-                repo,
-                path,
-                branch,
-                f"fix: {state['fix_title']}",
-                state["new_content"],
-                blob_sha,
-            )
-            pr_body = (
-                "## AutoHackFix\n\n"
-                f"**What was wrong:** see issue targeting `{path}`.\n\n"
-                f"**What we changed:** {state['fix_explanation']}\n\n"
-                f"**Confidence:** {state['confidence']:.2f}\n\n"
-                f"**Validation:** {state['validation_notes']}\n\n"
-                "_Opened by AutoHackFix agent pipeline._"
-            )
-            url = open_pull_request(
-                client,
-                token,
-                owner,
-                repo,
-                state["fix_title"],
-                pr_body,
-                head=branch,
-                base=base,
-            )
-    except httpx.HTTPStatusError as e:
-        err = f"GitHub error creating PR: {e.response.status_code} — {e.response.text[:400]}"
-        return {"stage_log": [err], "error": err, "pr_url": None, "branch_name": branch}
-    except Exception as e:  # noqa: BLE001
-        return {"stage_log": [f"PR failed: {e}"], "error": str(e), "pr_url": None}
+    outcome = create_pull_request_for_fix(
+        token,
+        owner=state["owner"],
+        repo=state["repo"],
+        default_branch=state["default_branch"],
+        target_path=state["target_path"],
+        fix_title=state["fix_title"],
+        fix_explanation=state["fix_explanation"],
+        new_content=state["new_content"],
+        confidence=float(state.get("confidence") or 0.0),
+        validation_notes=state.get("validation_notes") or "",
+        file_shas=state.get("file_shas") or {},
+    )
+    if outcome.get("error"):
+        err = str(outcome["error"])
+        return {
+            "stage_log": [err],
+            "error": err,
+            "pr_url": None,
+            "branch_name": outcome.get("branch_name"),
+        }
 
+    url = str(outcome["pr_url"])
+    branch = str(outcome.get("branch_name") or "")
     return {"pr_url": url, "branch_name": branch, "stage_log": [f"PR: opened {url}"]}
 
 
