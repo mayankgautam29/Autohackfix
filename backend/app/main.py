@@ -17,6 +17,21 @@ load_dotenv()
 _settings = get_settings()
 _limiter = RateLimiter(_settings.rate_limit_requests, _settings.rate_limit_window_seconds)
 
+_PRODUCTION_CORS_ORIGINS = (
+    "https://autohackfix.vercel.app",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+)
+
+
+def _resolved_cors_origins() -> list[str]:
+    origins = [o.strip() for o in _settings.cors_origins.split(",") if o.strip()]
+    if _settings.app_env.lower() == "production":
+        for origin in _PRODUCTION_CORS_ORIGINS:
+            if origin not in origins:
+                origins.append(origin)
+    return origins
+
 app = FastAPI(
     title="AutoHackFix API",
     version="0.1.0",
@@ -25,7 +40,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[o.strip() for o in _settings.cors_origins.split(",") if o.strip()],
+    allow_origins=_resolved_cors_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
