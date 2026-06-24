@@ -173,13 +173,25 @@ def node_ingest(state: AgentState, *, model: str, openai_key: str) -> dict[str, 
                     files[path] = text if len(text) <= cap else text[:cap] + "\n\n/* … truncated … */\n"
                     shas[path] = sha
     except httpx.HTTPStatusError as e:
-        if not token and e.response.status_code in {401, 403, 404}:
+        status = e.response.status_code
+        if not token and status == 404:
             err = (
-                "GitHub API error: repository not accessible without a token. "
-                "Private repos require a PAT; public repos may hit unauthenticated rate limits."
+                f"GitHub could not find `{owner}/{repo}`. "
+                "Use the full owner/repo (e.g. yourusername/pingpongscorekeeper), not just the repo name. "
+                "Private repositories also return 404 without a token — add a GitHub PAT if yours is private."
             )
+        elif not token and status == 403:
+            if e.response.headers.get("x-ratelimit-remaining") == "0":
+                err = (
+                    "GitHub unauthenticated API rate limit exceeded on this server "
+                    "(60 requests/hour shared across all users). Add a GitHub token or try again later."
+                )
+            else:
+                err = f"GitHub API error: 403 — {e.response.text[:300]}"
+        elif not token and status == 401:
+            err = "GitHub requires authentication for this repository. Add a GitHub personal access token."
         else:
-            err = f"GitHub API error: {e.response.status_code} — {e.response.text[:300]}"
+            err = f"GitHub API error: {status} — {e.response.text[:300]}"
         return {"owner": owner, "repo": repo, "error": err, "stage_log": [err], "ingest_from_cache": False}
     except Exception as e:  # noqa: BLE001
         return {
