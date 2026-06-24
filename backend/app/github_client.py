@@ -52,21 +52,23 @@ def parse_repo_input(raw: str) -> tuple[str, str]:
     raise ValueError("Use owner/repo or a github.com URL")
 
 
-def _headers(token: str) -> dict[str, str]:
-    return {
-        "Authorization": f"Bearer {token}",
+def _headers(token: str | None) -> dict[str, str]:
+    h: dict[str, str] = {
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
     }
+    if token:
+        h["Authorization"] = f"Bearer {token}"
+    return h
 
 
-def get_repo_meta(client: httpx.Client, token: str, owner: str, repo: str) -> dict[str, Any]:
+def get_repo_meta(client: httpx.Client, token: str | None, owner: str, repo: str) -> dict[str, Any]:
     r = client.get(f"{GITHUB_API}/repos/{owner}/{repo}", headers=_headers(token), timeout=60.0)
     r.raise_for_status()
     return r.json()
 
 
-def get_default_branch_sha(client: httpx.Client, token: str, owner: str, repo: str, branch: str) -> str:
+def get_default_branch_sha(client: httpx.Client, token: str | None, owner: str, repo: str, branch: str) -> str:
     r = client.get(
         f"{GITHUB_API}/repos/{owner}/{repo}/git/ref/heads/{branch}",
         headers=_headers(token),
@@ -76,7 +78,7 @@ def get_default_branch_sha(client: httpx.Client, token: str, owner: str, repo: s
     return r.json()["object"]["sha"]
 
 
-def list_root_paths(client: httpx.Client, token: str, owner: str, repo: str, branch: str) -> list[str]:
+def list_root_paths(client: httpx.Client, token: str | None, owner: str, repo: str, branch: str) -> list[str]:
     r = client.get(
         f"{GITHUB_API}/repos/{owner}/{repo}/contents/",
         headers=_headers(token),
@@ -111,7 +113,7 @@ def list_root_paths(client: httpx.Client, token: str, owner: str, repo: str, bra
 
 def _list_dir_recursive(
     client: httpx.Client,
-    token: str,
+    token: str | None,
     owner: str,
     repo: str,
     path: str,
@@ -143,7 +145,7 @@ def _list_dir_recursive(
 
 
 def fetch_file_text(
-    client: httpx.Client, token: str, owner: str, repo: str, path: str, branch: str
+    client: httpx.Client, token: str | None, owner: str, repo: str, path: str, branch: str
 ) -> tuple[str, str | None]:
     """Returns (decoded_text, blob_sha for updates)."""
     r = client.get(
@@ -181,7 +183,7 @@ def select_text_files(paths: list[str], max_files: int = 12) -> list[str]:
     return [p for _, p in scored[:max_files]]
 
 
-def create_branch(client: httpx.Client, token: str, owner: str, repo: str, name: str, from_sha: str) -> None:
+def create_branch(client: httpx.Client, token: str | None, owner: str, repo: str, name: str, from_sha: str) -> None:
     r = client.post(
         f"{GITHUB_API}/repos/{owner}/{repo}/git/refs",
         headers=_headers(token),
@@ -195,7 +197,7 @@ def create_branch(client: httpx.Client, token: str, owner: str, repo: str, name:
 
 def commit_file_update(
     client: httpx.Client,
-    token: str,
+    token: str | None,
     owner: str,
     repo: str,
     path: str,
@@ -222,7 +224,7 @@ def commit_file_update(
 
 def open_pull_request(
     client: httpx.Client,
-    token: str,
+    token: str | None,
     owner: str,
     repo: str,
     title: str,

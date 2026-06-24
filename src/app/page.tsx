@@ -33,11 +33,16 @@ type AnalyzeResult = {
   fix_title: string;
   fix_explanation: string;
   new_content: string;
+  diff_text: string;
+  diff_additions: number;
+  diff_deletions: number;
   confidence: number;
   validation_passed: boolean;
   validation_notes: string;
   pr_url: string | null;
   branch_name: string | null;
+  ingest_from_cache: boolean;
+  pr_blocked_reason: string | null;
   stage_log: string[];
   error: string | null;
 };
@@ -49,13 +54,44 @@ function severityStyle(s: string) {
   return "bg-zinc-500/15 text-zinc-300 ring-zinc-500/20";
 }
 
+function diffLineClass(line: string) {
+  if (line.startsWith("@@")) return "text-sky-300/90";
+  if (line.startsWith("+++") || line.startsWith("---")) return "text-zinc-500";
+  if (line.startsWith("+")) return "bg-emerald-500/12 text-emerald-200";
+  if (line.startsWith("-")) return "bg-rose-500/12 text-rose-200";
+  return "text-zinc-400";
+}
+
+function DiffView({ diff, path }: { diff: string; path: string }) {
+  const lines = diff.split("\n");
+  return (
+    <section className="rounded-2xl border border-[var(--border)] bg-[var(--surface)]/80 shadow-sm shadow-black/25">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--border)] px-5 py-4">
+        <h2 className="text-sm font-semibold text-zinc-100">Changes</h2>
+        <span className="font-mono text-xs text-[var(--muted)]">{path}</span>
+      </div>
+      <pre className="max-h-[min(28rem,65vh)] overflow-auto bg-[var(--bg-elevated)] p-4 font-mono text-[12px] leading-relaxed">
+        {lines.map((line, i) => (
+          <div key={`${i}-${line.slice(0, 24)}`} className={`whitespace-pre-wrap px-1 ${diffLineClass(line)}`}>
+            {line || " "}
+          </div>
+        ))}
+      </pre>
+    </section>
+  );
+}
+
 export default function Home() {
   const [repo, setRepo] = useState("");
   const [token, setToken] = useState("");
   const [createPr, setCreatePr] = useState(false);
+  const [useCache, setUseCache] = useState(true);
+  const [refreshCache, setRefreshCache] = useState(false);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<AnalyzeResult | null>(null);
   const [clientError, setClientError] = useState<string | null>(null);
+
+  const hasToken = token.trim().length > 0;
 
   const fullRepoLabel = useMemo(() => {
     if (!result?.owner) return "";
@@ -74,7 +110,9 @@ export default function Home() {
         body: JSON.stringify({
           repo: repo.trim(),
           github_token: token.trim(),
-          create_pr: createPr,
+          create_pr: createPr && hasToken,
+          use_cache: useCache,
+          refresh_cache: refreshCache,
         }),
       });
       const data = (await res.json()) as AnalyzeResult & { detail?: unknown };
@@ -135,7 +173,7 @@ export default function Home() {
             AutoHackFix
           </h1>
           <p className="mx-auto mt-4 max-w-md text-[15px] leading-relaxed text-[var(--muted)]">
-            Scan a GitHub repo for clear issues, get a proposed patch, and optionally open a PR.
+            Scan a public GitHub repo without a token, or add a PAT for private repos and PRs.
           </p>
         </header>
 
@@ -170,19 +208,19 @@ export default function Home() {
               >
                 <KeyRound className="size-4 text-[var(--faint)]" strokeWidth={2} />
                 GitHub token
+                <span className="text-xs font-normal text-[var(--faint)]">(optional)</span>
               </label>
               <input
                 id="token"
                 type="password"
                 className={`${inputClass} font-mono text-sm`}
-                placeholder="ghp_… or fine-grained PAT"
+                placeholder="ghp_… — leave empty for public repos"
                 value={token}
                 onChange={(e) => setToken(e.target.value)}
                 autoComplete="off"
-                required
               />
               <p className="mt-2 text-xs leading-relaxed text-[var(--faint)]">
-                Sent to your API for this request only. Needs read access; PRs need write + PR scope.
+                Omit for public repo scans. Required for private repos and opening pull requests.
               </p>
             </div>
 
@@ -190,7 +228,46 @@ export default function Home() {
               <input
                 type="checkbox"
                 className="mt-1 size-4 rounded border-zinc-600 bg-zinc-900 text-emerald-500 focus:ring-emerald-500/30 focus:ring-offset-0"
+                checked={useCache}
+                onChange={(e) => setUseCache(e.target.checked)}
+              />
+              <span className="text-sm leading-snug">
+                <span className="font-medium text-zinc-100">Use cached repo scan</span>
+                <span className="mt-1 block text-[var(--faint)]">
+                  Reruns skip GitHub fetch when a recent snapshot exists (AI analysis still runs).
+                </span>
+              </span>
+            </label>
+
+            {useCache && (
+              <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg)]/80 p-4 transition hover:border-zinc-700 hover:bg-[var(--surface-hover)]/50">
+                <input
+                  type="checkbox"
+                  className="mt-1 size-4 rounded border-zinc-600 bg-zinc-900 text-emerald-500 focus:ring-emerald-500/30 focus:ring-offset-0"
+                  checked={refreshCache}
+                  onChange={(e) => setRefreshCache(e.target.checked)}
+                />
+                <span className="text-sm leading-snug">
+                  <span className="font-medium text-zinc-100">Refresh repo from GitHub</span>
+                  <span className="mt-1 block text-[var(--faint)]">
+                    Force a new scan and update the cache before analysis.
+                  </span>
+                </span>
+              </label>
+            )}
+
+            <label
+              className={`flex items-start gap-3 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg)]/80 p-4 transition ${
+                hasToken
+                  ? "cursor-pointer hover:border-zinc-700 hover:bg-[var(--surface-hover)]/50"
+                  : "cursor-not-allowed opacity-60"
+              }`}
+            >
+              <input
+                type="checkbox"
+                className="mt-1 size-4 rounded border-zinc-600 bg-zinc-900 text-emerald-500 focus:ring-emerald-500/30 focus:ring-offset-0 disabled:cursor-not-allowed"
                 checked={createPr}
+                disabled={!hasToken}
                 onChange={(e) => setCreatePr(e.target.checked)}
               />
               <span className="text-sm leading-snug">
@@ -199,7 +276,9 @@ export default function Home() {
                   Open a pull request
                 </span>
                 <span className="mt-1 block text-[var(--faint)]">
-                  New branch, commit, and PR against the default branch.
+                  {hasToken
+                    ? "New branch, commit, and PR against the default branch."
+                    : "Requires a GitHub token — scan and fix still work without one."}
                 </span>
               </span>
             </label>
@@ -264,11 +343,22 @@ export default function Home() {
                       <span className="text-zinc-600">·</span> {result.default_branch}
                     </span>
                   )}
+                  {result.ingest_from_cache && (
+                    <span className="rounded-md bg-sky-500/10 px-2 py-0.5 font-medium text-sky-300/95">
+                      cached scan
+                    </span>
+                  )}
                   {typeof result.confidence === "number" && result.confidence > 0 && (
                     <span className="rounded-md bg-[var(--accent-dim)] px-2 py-0.5 font-medium text-emerald-300/95">
                       {(result.confidence * 100).toFixed(0)}% confidence
                     </span>
                   )}
+                </div>
+              )}
+
+              {result.pr_blocked_reason && (
+                <div className="rounded-2xl border border-sky-500/25 bg-sky-500/5 px-5 py-4">
+                  <p className="text-sm leading-relaxed text-sky-100/90">{result.pr_blocked_reason}</p>
                 </div>
               )}
 
@@ -316,6 +406,22 @@ export default function Home() {
                     </p>
                   )}
                 </section>
+              )}
+
+              {result.diff_text && result.target_path && (
+                <div className="space-y-3">
+                  {(result.diff_additions > 0 || result.diff_deletions > 0) && (
+                    <div className="flex flex-wrap gap-2 text-xs font-medium">
+                      <span className="rounded-md bg-emerald-500/12 px-2 py-1 text-emerald-300">
+                        +{result.diff_additions}
+                      </span>
+                      <span className="rounded-md bg-rose-500/12 px-2 py-1 text-rose-300">
+                        −{result.diff_deletions}
+                      </span>
+                    </div>
+                  )}
+                  <DiffView diff={result.diff_text} path={result.target_path} />
+                </div>
               )}
 
               {result.new_content && result.target_path && (

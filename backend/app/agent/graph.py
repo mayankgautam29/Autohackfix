@@ -24,6 +24,7 @@ from app.github_client import (
     select_text_files,
     unique_branch_name,
 )
+from app.repo_cache import get_cached_ingest, set_cached_ingest
 
 
 class IssueItem(TypedDict):
@@ -37,6 +38,9 @@ class AgentState(TypedDict):
     repo_input: str
     github_token: str
     create_pr: bool
+    use_cache: bool
+    refresh_cache: bool
+    cache_ttl_seconds: int
     owner: str
     repo: str
     default_branch: str
@@ -52,6 +56,8 @@ class AgentState(TypedDict):
     validation_notes: str
     pr_url: str | None
     branch_name: str | None
+    ingest_from_cache: bool
+    pr_blocked_reason: str | None
     error: str | None
     stage_log: Annotated[list[str], operator.add]
 
@@ -120,12 +126,40 @@ def node_ingest(state: AgentState, *, model: str, openai_key: str) -> dict[str, 
     except ValueError as e:
         return {**_append_log(state, f"Ingest failed: {e}"), "error": str(e)}
 
+    token = (state.get("github_token") or "").strip() or None
+    use_cache = bool(state.get("use_cache", True))
+    refresh_cache = bool(state.get("refresh_cache", False))
+    ttl = int(state.get("cache_ttl_seconds") or 3600)
+
+    if use_cache and not refresh_cache:
+        cached = get_cached_ingest(owner, repo, ttl_seconds=ttl)
+        if cached:
+            branch = str(cached.get("default_branch") or "main")
+            files = dict(cached.get("files_snapshot") or {})
+            shas = dict(cached.get("file_shas") or {})
+            auth_note = "authenticated" if token else "unauthenticated (public repos only)"
+            return {
+                "owner": owner,
+                "repo": repo,
+                "default_branch": branch,
+                "files_snapshot": files,
+                "file_shas": shas,
+                "ingest_from_cache": True,
+                "stage_log": [
+                    "Ingest: resolved repository coordinates.",
+                    f"Ingest: using cached snapshot ({len(files)} files, {auth_note}).",
+                ],
+                "error": None,
+            }
+
     log: list[str] = ["Ingest: resolved repository coordinates."]
+    if not token:
+        log.append("Ingest: no PAT — scanning public repo via unauthenticated GitHub API.")
     try:
         with httpx.Client() as client:
-            meta = get_repo_meta(client, state["github_token"], owner, repo)
+            meta = get_repo_meta(client, token, owner, repo)
             branch = str(meta.get("default_branch") or "main")
-            paths = list_root_paths(client, state["github_token"], owner, repo, branch)
+            paths = list_root_paths(client, token, owner, repo, branch)
             chosen = select_text_files(paths, max_files=12)
             if not chosen:
                 chosen = select_text_files(paths + [p for p in paths], max_files=5) or paths[:5]
@@ -133,16 +167,38 @@ def node_ingest(state: AgentState, *, model: str, openai_key: str) -> dict[str, 
             files: dict[str, str] = {}
             shas: dict[str, str | None] = {}
             for path in chosen:
-                text, sha = fetch_file_text(client, state["github_token"], owner, repo, path, branch)
+                text, sha = fetch_file_text(client, token, owner, repo, path, branch)
                 if text:
                     cap = 12000
                     files[path] = text if len(text) <= cap else text[:cap] + "\n\n/* … truncated … */\n"
                     shas[path] = sha
     except httpx.HTTPStatusError as e:
-        err = f"GitHub API error: {e.response.status_code} — {e.response.text[:300]}"
-        return {"owner": owner, "repo": repo, "error": err, "stage_log": [err]}
+        if not token and e.response.status_code in {401, 403, 404}:
+            err = (
+                "GitHub API error: repository not accessible without a token. "
+                "Private repos require a PAT; public repos may hit unauthenticated rate limits."
+            )
+        else:
+            err = f"GitHub API error: {e.response.status_code} — {e.response.text[:300]}"
+        return {"owner": owner, "repo": repo, "error": err, "stage_log": [err], "ingest_from_cache": False}
     except Exception as e:  # noqa: BLE001
-        return {"owner": owner, "repo": repo, "error": str(e), "stage_log": [f"Ingest error: {e}"]}
+        return {
+            "owner": owner,
+            "repo": repo,
+            "error": str(e),
+            "stage_log": [f"Ingest error: {e}"],
+            "ingest_from_cache": False,
+        }
+
+    if use_cache and files:
+        set_cached_ingest(
+            owner,
+            repo,
+            default_branch=branch,
+            files_snapshot=files,
+            file_shas=shas,
+        )
+        log.append(f"Ingest: cached snapshot for `{owner}/{repo}`.")
 
     log.append(f"Ingest: loaded {len(files)} text files from `{branch}`.")
     return {
@@ -151,6 +207,7 @@ def node_ingest(state: AgentState, *, model: str, openai_key: str) -> dict[str, 
         "default_branch": branch,
         "files_snapshot": files,
         "file_shas": shas,
+        "ingest_from_cache": False,
         "stage_log": log,
         "error": None,
     }
@@ -330,18 +387,27 @@ def node_pr(state: AgentState, *, model: str, openai_key: str) -> dict[str, Any]
     if not state.get("create_pr"):
         return {"stage_log": ["PR: skipped (dry run / user disabled PR creation)."], "pr_url": None}
 
+    token = (state.get("github_token") or "").strip()
+    if not token:
+        reason = "A GitHub personal access token is required to create pull requests."
+        return {
+            "stage_log": [f"PR: skipped — {reason}"],
+            "pr_url": None,
+            "pr_blocked_reason": reason,
+        }
+
     owner, repo = state["owner"], state["repo"]
     path = state["target_path"]
     branch = unique_branch_name()
     base = state["default_branch"]
     try:
         with httpx.Client() as client:
-            tip_sha = get_default_branch_sha(client, state["github_token"], owner, repo, base)
-            create_branch(client, state["github_token"], owner, repo, branch, tip_sha)
+            tip_sha = get_default_branch_sha(client, token, owner, repo, base)
+            create_branch(client, token, owner, repo, branch, tip_sha)
             blob_sha = state["file_shas"].get(path)
             commit_file_update(
                 client,
-                state["github_token"],
+                token,
                 owner,
                 repo,
                 path,
@@ -360,7 +426,7 @@ def node_pr(state: AgentState, *, model: str, openai_key: str) -> dict[str, Any]
             )
             url = open_pull_request(
                 client,
-                state["github_token"],
+                token,
                 owner,
                 repo,
                 state["fix_title"],
@@ -423,13 +489,25 @@ def run_pipeline(
     github_token: str,
     *,
     create_pr: bool,
+    use_cache: bool,
+    refresh_cache: bool,
+    cache_ttl_seconds: int,
     model: str,
     openai_key: str,
 ) -> AgentState:
+    token = github_token.strip()
+    effective_create_pr = create_pr and bool(token)
+    pr_blocked_reason: str | None = None
+    if create_pr and not token:
+        pr_blocked_reason = "A GitHub personal access token is required to create pull requests."
+
     initial: AgentState = {
         "repo_input": repo_input,
-        "github_token": github_token,
-        "create_pr": create_pr,
+        "github_token": token,
+        "create_pr": effective_create_pr,
+        "use_cache": use_cache,
+        "refresh_cache": refresh_cache,
+        "cache_ttl_seconds": cache_ttl_seconds,
         "owner": "",
         "repo": "",
         "default_branch": "main",
@@ -445,8 +523,14 @@ def run_pipeline(
         "validation_notes": "",
         "pr_url": None,
         "branch_name": None,
+        "ingest_from_cache": False,
+        "pr_blocked_reason": pr_blocked_reason,
         "error": None,
-        "stage_log": [],
+        "stage_log": (
+            [f"Note: {pr_blocked_reason} Scan and fix will still run."]
+            if pr_blocked_reason
+            else []
+        ),
     }
     graph = build_graph(model, openai_key)
     return graph.invoke(initial)
