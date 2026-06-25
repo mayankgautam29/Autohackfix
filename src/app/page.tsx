@@ -12,42 +12,16 @@ import {
   ScrollText,
   Sparkles,
 } from "lucide-react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
-
-type Issue = {
-  file_path: string;
-  severity: string;
-  title: string;
-  description: string;
-};
-
-type AnalyzeResult = {
-  ok: boolean;
-  owner: string;
-  repo: string;
-  default_branch: string;
-  issues: Issue[];
-  target_path: string;
-  fix_title: string;
-  fix_explanation: string;
-  new_content: string;
-  diff_text: string;
-  diff_additions: number;
-  diff_deletions: number;
-  confidence: number;
-  validation_passed: boolean;
-  validation_notes: string;
-  pr_url: string | null;
-  branch_name: string | null;
-  run_id: string | null;
-  can_create_pr: boolean;
-  ingest_from_cache: boolean;
-  pr_blocked_reason: string | null;
-  stage_log: string[];
-  error: string | null;
-};
+import {
+  analyzeRepo,
+  createPrFromRun,
+  normalizeRepoKey,
+  type AnalyzeResult,
+} from "@/lib/api";
+import { scanKeys } from "@/lib/query-keys";
 
 function severityStyle(s: string) {
   const x = s.toLowerCase();
@@ -84,64 +58,81 @@ function DiffView({ diff, path }: { diff: string; path: string }) {
 }
 
 export default function Home() {
+  const queryClient = useQueryClient();
   const [repo, setRepo] = useState("");
   const [token, setToken] = useState("");
   const [createPr, setCreatePr] = useState(false);
   const [useCache, setUseCache] = useState(true);
   const [refreshCache, setRefreshCache] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [prLoading, setPrLoading] = useState(false);
   const [result, setResult] = useState<AnalyzeResult | null>(null);
-  const [clientError, setClientError] = useState<string | null>(null);
   const [prError, setPrError] = useState<string | null>(null);
 
   const hasToken = token.trim().length > 0;
+  const repoKey = normalizeRepoKey(repo);
+
+  const cachedResult =
+    repoKey && !result
+      ? queryClient.getQueryData<AnalyzeResult>(scanKeys.result(repo))
+      : undefined;
+
+  const analyzeMutation = useMutation({
+    mutationFn: analyzeRepo,
+    onSuccess: (data, variables) => {
+      queryClient.setQueryData(scanKeys.result(variables.repo), data);
+      setResult(data);
+    },
+  });
+
+  const createPrMutation = useMutation({
+    mutationFn: ({ runId, pat }: { runId: string; pat: string }) => createPrFromRun(runId, pat),
+    onSuccess: (data) => {
+      setResult((prev) => {
+        if (!prev) return prev;
+        const next: AnalyzeResult = {
+          ...prev,
+          pr_url: data.pr_url ?? null,
+          branch_name: data.branch_name ?? null,
+          can_create_pr: false,
+        };
+        if (repoKey) {
+          queryClient.setQueryData(scanKeys.result(repo), next);
+        }
+        return next;
+      });
+    },
+  });
+
+  const loading = analyzeMutation.isPending;
+  const prLoading = createPrMutation.isPending;
+  const clientError = analyzeMutation.error?.message ?? null;
 
   const fullRepoLabel = useMemo(() => {
     if (!result?.owner) return "";
     return `${result.owner}/${result.repo}`;
   }, [result]);
 
-  async function onSubmit(e: React.FormEvent) {
+  function onSubmit(e: React.FormEvent) {
     e.preventDefault();
-    setClientError(null);
     setPrError(null);
     setResult(null);
-    setLoading(true);
-    try {
-      const res = await fetch(`${API_BASE}/api/analyze`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          repo: repo.trim(),
-          github_token: token.trim(),
-          create_pr: createPr && hasToken,
-          use_cache: useCache,
-          refresh_cache: refreshCache,
-        }),
-      });
-      const data = (await res.json()) as AnalyzeResult & { detail?: unknown };
-      if (!res.ok) {
-        const detail =
-          typeof data.detail === "string"
-            ? data.detail
-            : JSON.stringify(data.detail ?? res.statusText);
-        setClientError(detail);
-        return;
-      }
-      setResult(data);
-    } catch (err) {
-      setClientError(
-        err instanceof Error
-          ? `${err.message}. Is the API running at ${API_BASE}?`
-          : "Request failed.",
-      );
-    } finally {
-      setLoading(false);
+    analyzeMutation.mutate({
+      repo: repo.trim(),
+      github_token: token.trim(),
+      create_pr: createPr && hasToken,
+      use_cache: useCache,
+      refresh_cache: refreshCache,
+    });
+  }
+
+  function loadCachedResult() {
+    const cached = queryClient.getQueryData<AnalyzeResult>(scanKeys.result(repo));
+    if (cached) {
+      setResult(cached);
+      setPrError(null);
     }
   }
 
-  async function onCreatePr() {
+  function onCreatePr() {
     if (!result?.run_id) return;
     setPrError(null);
     const pat = token.trim();
@@ -149,47 +140,10 @@ export default function Home() {
       setPrError("Add a GitHub token above, then create the PR — no re-scan or AI cost.");
       return;
     }
-    setPrLoading(true);
-    try {
-      const res = await fetch(`${API_BASE}/api/create-pr`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ run_id: result.run_id, github_token: pat }),
-      });
-      const data = (await res.json()) as {
-        ok: boolean;
-        pr_url?: string | null;
-        branch_name?: string | null;
-        error?: string | null;
-        detail?: unknown;
-      };
-      if (!res.ok) {
-        const detail =
-          typeof data.detail === "string"
-            ? data.detail
-            : JSON.stringify(data.detail ?? res.statusText);
-        setPrError(detail);
-        return;
-      }
-      if (!data.ok || !data.pr_url) {
-        setPrError(data.error ?? "Could not open pull request.");
-        return;
-      }
-      setResult((prev) =>
-        prev
-          ? {
-              ...prev,
-              pr_url: data.pr_url ?? null,
-              branch_name: data.branch_name ?? null,
-              can_create_pr: false,
-            }
-          : prev,
-      );
-    } catch (err) {
-      setPrError(err instanceof Error ? err.message : "Request failed.");
-    } finally {
-      setPrLoading(false);
-    }
+    createPrMutation.mutate(
+      { runId: result.run_id, pat },
+      { onError: (err) => setPrError(err.message) },
+    );
   }
 
   const logSteps = result?.stage_log ?? [];
@@ -359,6 +313,21 @@ export default function Home() {
           </div>
         </form>
 
+        {!result && !loading && cachedResult && repoKey && (
+          <div className="mt-6 rounded-xl border border-sky-500/25 bg-sky-500/5 px-5 py-4">
+            <p className="text-sm text-sky-100/90">
+              A recent scan for this repo is cached in your browser (React Query, 1 hour).
+            </p>
+            <button
+              type="button"
+              onClick={loadCachedResult}
+              className="mt-3 text-sm font-semibold text-sky-300 underline-offset-2 hover:underline"
+            >
+              Load cached result — no API call
+            </button>
+          </div>
+        )}
+
         <div className="mt-12 space-y-8">
           {clientError && (
             <div className="rounded-2xl border border-rose-500/25 bg-[var(--danger-bg)] px-5 py-4">
@@ -401,7 +370,12 @@ export default function Home() {
                   )}
                   {result.ingest_from_cache && (
                     <span className="rounded-md bg-sky-500/10 px-2 py-0.5 font-medium text-sky-300/95">
-                      cached scan
+                      server cache
+                    </span>
+                  )}
+                  {result.cache_backend && (
+                    <span className="rounded-md bg-zinc-500/10 px-2 py-0.5 font-mono text-[10px] font-medium uppercase text-zinc-400">
+                      {result.cache_backend}
                     </span>
                   )}
                   {typeof result.confidence === "number" && result.confidence > 0 && (

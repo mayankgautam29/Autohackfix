@@ -16,6 +16,10 @@ services:
         value: gpt-4o-mini
       - key: CORS_ORIGINS
         value: https://autohackfix.vercel.app,http://localhost:3000,http://127.0.0.1:3000
+      - key: UPSTASH_REDIS_REST_URL
+        sync: false
+      - key: UPSTASH_REDIS_REST_TOKEN
+        sync: false
 
   - type: web
     name: autohackfix-web

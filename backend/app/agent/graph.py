@@ -205,6 +205,7 @@ def node_ingest(state: AgentState, *, model: str, openai_key: str) -> dict[str, 
             default_branch=branch,
             files_snapshot=files,
             file_shas=shas,
+            ttl_seconds=ttl,
         )
         log.append(f"Ingest: cached snapshot for `{owner}/{repo}`.")
 

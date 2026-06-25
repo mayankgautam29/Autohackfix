@@ -1,35 +1,22 @@
-"""File-backed cache for repository ingest snapshots (avoids re-fetching on reruns)."""
+"""Repository ingest cache (Redis or file fallback via kv_cache)."""
 
 from __future__ import annotations
 
-import json
-import re
 import time
-from pathlib import Path
 from typing import Any
 
-_CACHE_ROOT = Path(__file__).resolve().parent.parent / ".cache" / "repos"
+from app.kv_cache import KVCache
+
+_PREFIX = "ingest"
 
 
-def _safe_key(owner: str, repo: str) -> str:
-    raw = f"{owner}__{repo}".lower()
-    return re.sub(r"[^a-z0-9._-]+", "_", raw)
-
-
-def _cache_path(owner: str, repo: str) -> Path:
-    return _CACHE_ROOT / f"{_safe_key(owner, repo)}.json"
+def _key(owner: str, repo: str) -> str:
+    return f"{_PREFIX}:{owner.lower()}:{repo.lower()}"
 
 
 def get_cached_ingest(owner: str, repo: str, *, ttl_seconds: int) -> dict[str, Any] | None:
-    """Return cached ingest payload if present and not expired."""
-    path = _cache_path(owner, repo)
-    if not path.is_file():
-        return None
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    if not isinstance(data, dict):
+    data = KVCache.get().get_json(_key(owner, repo))
+    if not data:
         return None
     cached_at = float(data.get("cached_at") or 0)
     if ttl_seconds > 0 and (time.time() - cached_at) > ttl_seconds:
@@ -46,15 +33,17 @@ def set_cached_ingest(
     default_branch: str,
     files_snapshot: dict[str, str],
     file_shas: dict[str, str | None],
+    ttl_seconds: int = 3600,
 ) -> None:
-    path = _cache_path(owner, repo)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "owner": owner,
-        "repo": repo,
-        "default_branch": default_branch,
-        "files_snapshot": files_snapshot,
-        "file_shas": file_shas,
-        "cached_at": time.time(),
-    }
-    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    KVCache.get().set_json(
+        _key(owner, repo),
+        {
+            "owner": owner,
+            "repo": repo,
+            "default_branch": default_branch,
+            "files_snapshot": files_snapshot,
+            "file_shas": file_shas,
+            "cached_at": time.time(),
+        },
+        ttl_seconds=ttl_seconds,
+    )

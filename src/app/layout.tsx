@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { IBM_Plex_Mono, Outfit } from "next/font/google";
 import "./globals.css";
+import { Providers } from "./providers";
 
 const sans = Outfit({
   subsets: ["latin"],
@@ -30,7 +31,9 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className={`${mono.variable} h-full antialiased`}>
-      <body className={`${sans.className} min-h-full flex flex-col`}>{children}</body>
+      <body className={`${sans.className} min-h-full flex flex-col`}>
+        <Providers>{children}</Providers>
+      </body>
     </html>
   );
 }

@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     cache_ttl_seconds: int = 3600
     rate_limit_requests: int = 10
     rate_limit_window_seconds: int = 3600
+    upstash_redis_rest_url: str = ""
+    upstash_redis_rest_token: str = ""
 
 
 def get_settings() -> Settings:

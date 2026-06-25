@@ -13,6 +13,7 @@ from app.config import get_settings
 from app.diff_util import diff_line_stats, unified_diff_text
 from app.pr_service import create_pull_request_for_fix
 from app.rate_limit import RateLimiter, client_ip
+from app.kv_cache import cache_backend_name
 from app.run_store import get_pr_ready_run, mark_run_pr_created, save_pr_ready_run
 
 load_dotenv()
@@ -104,6 +105,7 @@ class AnalyzeResponse(BaseModel):
     run_id: str | None = None
     can_create_pr: bool = False
     ingest_from_cache: bool = False
+    cache_backend: str = "file"
     pr_blocked_reason: str | None = None
     stage_log: list[str] = []
     error: str | None = None
@@ -176,7 +178,7 @@ def root_head() -> Response:
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok"}
+    return {"status": "ok", "cache": cache_backend_name()}
 
 
 @app.head("/health", include_in_schema=False)
@@ -244,6 +246,7 @@ def analyze(body: AnalyzeRequest, request: Request) -> AnalyzeResponse:
         run_id=run_id,
         can_create_pr=can_create_pr,
         ingest_from_cache=bool(state.get("ingest_from_cache")),
+        cache_backend=cache_backend_name(),
         pr_blocked_reason=state.get("pr_blocked_reason"),
         stage_log=list(state.get("stage_log") or []),
         error=err,

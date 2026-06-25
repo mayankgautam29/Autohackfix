@@ -7,3 +7,4 @@ langchain-openai>=0.2.14
 langgraph>=0.2.55
 pydantic>=2.10.0
 pydantic-settings>=2.6.0
+upstash-redis>=1.2.0
